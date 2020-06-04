@@ -1,0 +1,11 @@
+mkdir /a/
+mkdir /b/
+mkdir /c/
+mkdir /d/
+mkdir /a/a/
+mkdir /a/b/
+mkdir /a/c/
+mkdir /a/d/
+ls /
+ls /a/
+nop /
