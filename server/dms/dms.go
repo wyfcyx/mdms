@@ -13,6 +13,9 @@ import (
 	"strings"
 	"bytes"
 	"encoding/gob"
+
+	"github.com/wyfcyx/mdms/access"
+	"github.com/wyfcyx/mdms/utils"
 )
 
 type Operation struct {
@@ -211,8 +214,15 @@ func initialize(db *leveldb.DB) {
 }
 
 func main() {
+	mdmsHome := utils.Home() + "/.mdms/"
 	// read passwd file get user list
+	userMap := access.LoadUserConfig(mdmsHome + "passwd")
 	// read group file get group info
+	groupMap := access.LoadGroupConfig(mdmsHome + "group", userMap)
+	access.ViewUserConfig(userMap)
+	access.ViewGroupConfig(userMap, groupMap)
+	return
+
 	db, err := leveldb.OpenFile("db", nil)
 	if err != nil {
 		fmt.Println(err)
