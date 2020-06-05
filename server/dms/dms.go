@@ -13,6 +13,7 @@ import (
 	"strings"
 	"bytes"
 	"encoding/gob"
+	"os"
 
 	"github.com/wyfcyx/mdms/access"
 	"github.com/wyfcyx/mdms/utils"
