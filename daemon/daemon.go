@@ -118,6 +118,7 @@ func main() {
 	fmt.Println("connected to remote server")
 	defer client.Close()
 
+	// read uid from client
 	uidArray := make([]byte, 1024)
 	if _, err := c.Read(uidArray); err != nil {
 		fmt.Println("error when receiving uid: ", err)
@@ -134,13 +135,17 @@ func main() {
 		fmt.Println("error when parsing uid: ", err)
 		return
 	}
+
+	// initialize uid, gid
 	var uid uint16
 	var gid uint16
 	uid = uint16(temp)
 	gid = uint16(temp)
 
 
-	// TODO: configure uid && gid on local client
+	// TODO: interact with manager
+	// validate the uid, query related username  
+	// send the info back to client & initialize it
 
     for {
 		// receive command from local client

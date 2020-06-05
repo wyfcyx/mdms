@@ -1,6 +1,7 @@
 # build and install binary into go local path
 go install github.com/wyfcyx/mdms/client
 go install github.com/wyfcyx/mdms/daemon
+go install github.com/wyfcyx/mdms/manager
 go install github.com/wyfcyx/mdms/server/dms
 go install github.com/wyfcyx/mdms/server/fms
 go install github.com/wyfcyx/mdms/server/nms

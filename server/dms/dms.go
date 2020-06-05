@@ -18,6 +18,11 @@ import (
 	"github.com/wyfcyx/mdms/utils"
 )
 
+var (
+	UserMap map[string]uint32
+	GroupMap map[uint16][]uint16
+)
+
 type Operation struct {
 	Uid uint16 
 	Gid uint16
@@ -131,9 +136,11 @@ func Pass(path string, uid uint16, gid uint16, t *LevelDB) (bool, DirAccess) {
 		depth := len(dirAccess.PairList) / 2
 		for i := 0; i < depth; i++ {
 			fuid, fgid := dirAccess.PairList[i << 1], dirAccess.PairList[(i << 1) | 1]
-			if fuid != uid && fgid != gid {
-				// simplify the complete process here
-				// TODO: get the full Gidlist(given uid) from "group" file
+			gidList, ok := GroupMap[uid]
+			if !ok {
+				log.Fatalf("uid=%v not found in GroupMap\n", uid)
+			}
+			if fuid != uid && !utils.Uint16InArray(fgid, gidList) {
 				return false, DirAccess{} 
 			}
 		}
@@ -207,22 +214,40 @@ func (t *LevelDB) Query(operation Operation, reply *Reply) error {
 }
 
 func initialize(db *leveldb.DB) {
+	// create the root directory
 	dirAccess := DirAccess{0, 0, Ugo2Mode(7, 5, 5), nil}
 	if err := db.Put([]byte("/"), DirAccess2ByteArray(dirAccess), nil); err != nil {
-		log.Fatalln("error when initialization")
+		log.Fatalln("error when creating /")
+	}
+	// create home directoy holder for all users
+	if err := db.Put([]byte("/home/"), DirAccess2ByteArray(dirAccess), nil); err != nil {
+		log.Fatalln("error when creating /home/")
+	}
+	// create home directory for users other than root
+	for username, uidGid := range(UserMap) {
+		uid, gid := uint16(uidGid >> 16), uint16(uidGid & 65535)
+		dirAccess = DirAccess{uid, gid, Ugo2Mode(7, 5, 5), nil}
+		if err := db.Put([]byte("/home/" + username + "/"), DirAccess2ByteArray(dirAccess), nil); err != nil {
+			log.Fatalln("error when creating /home/" + username + "/")
+		}
 	}
 }
 
 func main() {
 	mdmsHome := utils.Home() + "/.mdms/"
 	// read passwd file get user list
-	userMap := access.LoadUserConfig(mdmsHome + "passwd")
+	UserMap = access.LoadUserConfig(mdmsHome + "passwd")
 	// read group file get group info
-	groupMap := access.LoadGroupConfig(mdmsHome + "group", userMap)
-	access.ViewUserConfig(userMap)
-	access.ViewGroupConfig(userMap, groupMap)
-	return
+	GroupMap = access.LoadGroupConfig(mdmsHome + "group", UserMap)
 
+	// check if previous db store exist & delete
+	if utils.Exists("db") {
+		if err := os.RemoveAll("db"); err != nil {
+			log.Fatalln("error when remove previous db: ", err)
+		}
+	}	
+
+	// create & open database
 	db, err := leveldb.OpenFile("db", nil)
 	if err != nil {
 		fmt.Println(err)
