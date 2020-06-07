@@ -121,7 +121,7 @@ func Access(path string, t *LevelDB) (bool, string) {
 }
 
 func Pass(path string, uid uint16, gid uint16, t *LevelDB) (bool, DirAccess) {
-	log.Printf("begin Pass!")
+	log.Printf("pass uid,gid=%v,%v path=%v\n", uid, gid, path)
 	// return if (uid, gid) can pass all the directories from / to <path>
 	// search path as a key in KVS
 	byteArray, err := t.db.Get([]byte(DirentTransfer(path)), nil)
@@ -221,14 +221,23 @@ func initialize(db *leveldb.DB) {
 		log.Fatalln("error when creating /")
 	}
 	// create home directoy holder for all users
-	if err := db.Put([]byte("/home/"), DirAccess2ByteArray(dirAccess), nil); err != nil {
+	if err := db.Put([]byte(DirentTransfer("/home/")), DirAccess2ByteArray(dirAccess), nil); err != nil {
 		log.Fatalln("error when creating /home/")
+	}
+	// create home directory for root
+	if err := db.Put([]byte(DirentTransfer("/root/")), DirAccess2ByteArray(dirAccess), nil); err != nil {
+		log.Fatalln("error when creating /root/")
 	}
 	// create home directory for users other than root
 	for username, uidGid := range(UserMap) {
 		uid, gid := uint16(uidGid >> 16), uint16(uidGid & 65535)
+		if uid == 0 {
+			continue
+		}
 		dirAccess = DirAccess{uid, gid, Ugo2Mode(7, 5, 5), nil}
-		if err := db.Put([]byte("/home/" + username + "/"), DirAccess2ByteArray(dirAccess), nil); err != nil {
+		log.Printf("user=%v uid,gid=%v,%v\n", username, uid, gid)
+		home := "/home/" + username + "/"
+		if err := db.Put([]byte(DirentTransfer(home)), DirAccess2ByteArray(dirAccess), nil); err != nil {
 			log.Fatalln("error when creating /home/" + username + "/")
 		}
 	}
@@ -242,14 +251,16 @@ func main() {
 	GroupMap = access.LoadGroupConfig(mdmsHome + "group", UserMap)
 
 	// check if previous db store exist & delete
-	if utils.Exists("db") {
-		if err := os.RemoveAll("db"); err != nil {
+	dbPath := mdmsHome + "dmsdb"
+	if utils.Exists(dbPath) {
+		if err := os.RemoveAll(dbPath); err != nil {
 			log.Fatalln("error when remove previous db: ", err)
 		}
+		return
 	}	
 
 	// create & open database
-	db, err := leveldb.OpenFile("db", nil)
+	db, err := leveldb.OpenFile(dbPath, nil)
 	if err != nil {
 		fmt.Println(err)
 		return
