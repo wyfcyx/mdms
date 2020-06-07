@@ -6,6 +6,15 @@ import (
 	"log"
 )
 
+func GetFatherDirectory(path string) string {
+	for i := len(path) - 2; i >= 0; i-- {
+		if path[i] == '/' {
+			return path[:i + 1]
+		}
+	}
+	return path
+}
+
 func Home() string {
 	user, err := user.Current()
 	if err == nil {

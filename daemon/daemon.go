@@ -8,6 +8,9 @@ import (
 	"os"
 	"strings"
 	"log"
+
+	"github.com/wyfcyx/mdms/access"
+	"github.com/wyfcyx/mdms/utils"
 )
 
 type Operation struct {
@@ -19,61 +22,17 @@ type Operation struct {
 	PairList []uint16
 }
 
-type DirAccess struct {
-	Uid uint16
-	Gid uint16
-	Mode uint16
-	PairList []uint16
-}
-
-func (dirAccess DirAccess) GetString() string {
-	u, g, o := Mode2Ugo(dirAccess.Mode)
-	return fmt.Sprintf("uid=%v gid=%v ugo=%v%v%v", dirAccess.Uid, dirAccess.Gid, u, g, o)
-}
-
-func Ugo2Mode (u uint16, g uint16, o uint16) uint16 {
-	return u * 64 + g * 8 + o
-}
-
-func Mode2Ugo(mode uint16) (uint16, uint16, uint16) {
-	return (mode >> 6) & 7, (mode >> 3) & 7, mode & 7
-}
-
-func (dirAccess DirAccess) DirAccessCheck(uid uint16, gid uint16, flag uint16) bool {
-	// flag & 1 -> need X
-	// flag & 2 -> need W
-	// flag & 4 -> need R
-	u, g, o := Mode2Ugo(dirAccess.Mode)	
-	if uid == dirAccess.Uid {
-		return u & flag == flag
-	} else if gid == dirAccess.Gid {
-		// TODO: fetch full Gidlist(uid) from group file
-		return g & flag == flag
-	} else {
-		return o & flag == flag
-	}
-}
-
 type Reply struct {
 	R int
 	Info string
-	MDirAccess DirAccess
-}
-
-func GetFatherDirectory(path string) string {
-	for i := len(path) - 2; i >= 0; i-- {
-		if path[i] == '/' {
-			return path[:i + 1]
-		}
-	}
-	return path
+	MDirAccess access.DirAccess
 }
 
 // using "pass" command here
-func CheckOpacity(path string, uid uint16, gid uint16, client *rpc.Client) (bool, string, DirAccess) {
+func CheckOpacity(path string, uid uint16, gid uint16, dclient *rpc.Client) (bool, string, access.DirAccess) {
 	operation := Operation{uid, gid, "pass", path, nil, nil}
 	var reply Reply
-	if err := client.Call("LevelDB.Query", operation, &reply); err != nil {
+	if err := dclient.Call("LevelDB.Query", operation, &reply); err != nil {
 		log.Fatalln("error during rpc: ", err)
 	}
 	if reply.R == 0 {
@@ -81,7 +40,7 @@ func CheckOpacity(path string, uid uint16, gid uint16, client *rpc.Client) (bool
 		return true, "", reply.MDirAccess
 	} else {
 		// not passed
-		return false, reply.Info, DirAccess{}
+		return false, reply.Info, access.DirAccess{}
 	}
 }
 
@@ -100,23 +59,32 @@ func main() {
         return
     }
     defer l.Close()
-	fmt.Println("ready for local client")
+	log.Println("ready for local client")
     c, err := l.Accept()
     if err != nil {
         fmt.Println(err)
         return
     }
     defer c.Close()
-	fmt.Println("local client connected")
+	log.Println("local client connected")
 
 	// send remote request to server 
-    client, err := rpc.Dial("tcp", "10.1.0.20:1234")
+    dclient, err := rpc.Dial("tcp", "10.1.0.20:1234")
     if err != nil {
         fmt.Println(err)
         return
     }
-	fmt.Println("connected to remote server")
-	defer client.Close()
+	log.Println("connected to dms")
+	defer dclient.Close()
+	/*
+	fclient, err := rpc.Dial("tcp", "10.1.0.20:1235")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	log.Println("connected to fms")
+	*/
+
 
 	// read uid from client
 	uidArray := make([]byte, 1024)
@@ -141,7 +109,6 @@ func main() {
 	var gid uint16
 	uid = uint16(temp)
 	gid = uint16(temp)
-
 
 	// TODO: interact with manager
 	// validate the uid, query related username  
@@ -177,7 +144,7 @@ func main() {
 		switch c_type {
 		case "mkdir":
 			// access validation: check opacity from root to path's father dir
-			passed, info, dirAccess := CheckOpacity(GetFatherDirectory(path), uid, gid, client)
+			passed, _, dirAccess := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
 			if passed && dirAccess.DirAccessCheck(uid, gid, 2) {
 				// we need write access as well
 				// now, send request to correct node
@@ -190,7 +157,7 @@ func main() {
 					// TODO: select another mode other than default: 755
 					dirAccess.PairList}
 				var reply Reply
-				err = client.Call("LevelDB.Query", operation, &reply)
+				err = dclient.Call("LevelDB.Query", operation, &reply)
 				// TODO: select a correct server using consistent hashing
 				if err != nil {
 					log.Fatalln("error during rpc: ", err)
@@ -200,11 +167,12 @@ func main() {
 				result = "OK"
 			} else {
 				fmt.Println("access denied")
-				result = info
+				//result = info + " access denied"
+				result = "access denied"
 			}
 		case "ls":
 			 // access validation: check opacity from root to path's
-			passed, info, dirAccess := CheckOpacity(path, uid, gid, client)
+			passed, _, dirAccess := CheckOpacity(path, uid, gid, dclient)
 			if passed && dirAccess.DirAccessCheck(uid, gid, 4) {
 				// we need read access as well to list
 				operation := Operation {
@@ -215,7 +183,7 @@ func main() {
 					nil,
 					nil}
 				var reply Reply
-				err := client.Call("LevelDB.Query", operation, &reply)
+				err := dclient.Call("LevelDB.Query", operation, &reply)
 				// TODO: select a specific server using consistent hashing
 				if err != nil {
 					log.Fatalln("error during rpc: ", err)
@@ -225,11 +193,12 @@ func main() {
 				result = reply.Info
 			} else {
 				fmt.Println("access denied")
-				result = info
+				//result = info
+				result = "access denied"
 			}
 		case "stat":
 			// access validation: check opacity from root to path's parent
-			passed, info, _ := CheckOpacity(GetFatherDirectory(path), uid, gid, client)
+			passed, _, _ := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
 			if passed {
 				operation := Operation {
 					uid,
@@ -239,7 +208,7 @@ func main() {
 					nil,
 					nil}
 				var reply Reply		
-				err := client.Call("LevelDB.Query", operation, &reply)
+				err := dclient.Call("LevelDB.Query", operation, &reply)
 				// TODO: select a specific server
 				if err != nil {
 					log.Fatalln("error during rpc: ", err)
@@ -249,10 +218,15 @@ func main() {
 				result = reply.MDirAccess.GetString()
 			} else {
 				fmt.Println("access denied")
-				result = info
+				//result = info
+				result = "access denied"
 			}
 		}
 		
+		if result == "" {
+			result = "OK"
+		}
+		fmt.Printf("result = %v\n", result)
         if _, err := c.Write([]byte(result)); err != nil {
 			log.Fatalln("error when sending result to client")
         }
