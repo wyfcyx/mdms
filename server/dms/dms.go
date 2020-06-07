@@ -11,8 +11,8 @@ import (
     "log"
 	//"sync"
 	"strings"
-	"bytes"
-	"encoding/gob"
+	//"bytes"
+	//"encoding/gob"
 	"os"
 
 	"github.com/wyfcyx/mdms/access"
@@ -38,57 +38,13 @@ type LevelDB struct {
 	db *leveldb.DB
 }
 
-type DirAccess struct {
-	Uid uint16
-	Gid uint16
-	Mode uint16
-	PairList []uint16
-}
-
-func DirAccess2ByteArray(dirAccess DirAccess) []byte {
-	buf := new(bytes.Buffer)
-	enc := gob.NewEncoder(buf)
-	if err := enc.Encode(dirAccess); err != nil {
-		log.Fatalln("error when encoding dirAccess: ", err)
-	}
-	return buf.Bytes()
-}
-
-func ByteArray2DirAccess(byteArray []byte) DirAccess {
-	dec := gob.NewDecoder(bytes.NewBuffer(byteArray))
-	var dirAccess DirAccess
-	if err := dec.Decode(&dirAccess); err != nil {
-		log.Fatalln("error when decoding dirAccess: ", err)
-	}
-	return dirAccess	
-}
-
-func Ugo2Mode(u uint16, g uint16, o uint16) uint16 {
-	return u * 64 + g * 8 + o
-}
-
-func Mode2Ugo(mode uint16) (uint16, uint16, uint16) {
-	return (mode >> 6) & 7, (mode >> 3) & 7, mode & 7
-}
-
-/*
-type DirMetedata struct {
-	uid uint16
-	gid uint16
-	ctime uint64
-}
-*/
 var levelDB *LevelDB
 
-func (t *LevelDB) Test(args *int, reply *int) error {
-	fmt.Println("in Test!")
-	return nil
-}
 
 type Reply struct {
 	R int
 	Info string
-	MDirAccess DirAccess
+	MDirAccess access.DirAccess
 }
 
 func DirentTransfer(path string) string {
@@ -120,17 +76,17 @@ func Access(path string, t *LevelDB) (bool, string) {
 	return true, ""
 }
 
-func Pass(path string, uid uint16, gid uint16, t *LevelDB) (bool, DirAccess) {
+func Pass(path string, uid uint16, gid uint16, t *LevelDB) (bool, access.DirAccess) {
 	log.Printf("pass uid,gid=%v,%v path=%v\n", uid, gid, path)
 	// return if (uid, gid) can pass all the directories from / to <path>
 	// search path as a key in KVS
 	byteArray, err := t.db.Get([]byte(DirentTransfer(path)), nil)
 	if err != nil {
 		log.Printf("cannot found path %v in KVS\n", path)
-		return false, DirAccess{}
+		return false, access.DirAccess{}
 	}
 	// change byteArray into DirAccess
-	dirAccess := ByteArray2DirAccess(byteArray)
+	dirAccess := access.ByteArray2DirAccess(byteArray)
 	// check if (uid, gid) pair is valid
 	// if File uid != given uid, then File gid must be included in Gidlist(given uid)
 	if dirAccess.PairList != nil && len(dirAccess.PairList) > 0 {
@@ -142,20 +98,20 @@ func Pass(path string, uid uint16, gid uint16, t *LevelDB) (bool, DirAccess) {
 				log.Fatalf("uid=%v not found in GroupMap\n", uid)
 			}
 			if fuid != uid && !utils.Uint16InArray(fgid, gidList) {
-				return false, DirAccess{} 
+				return false, access.DirAccess{} 
 			}
 		}
 	}
 	return true, dirAccess
 }
 
-func Stat(path string, t *LevelDB) DirAccess {
+func Stat(path string, t *LevelDB) access.DirAccess {
 	fmt.Println("start Stat!")
 	byteArray, err := t.db.Get([]byte(DirentTransfer(path)), nil)
 	if err != nil {
 		log.Fatalf("cannot found path %v in KVS\n", path)
 	}
-	return ByteArray2DirAccess(byteArray)
+	return access.ByteArray2DirAccess(byteArray)
 }
 
 func (t *LevelDB) Query(operation Operation, reply *Reply) error {
@@ -165,13 +121,13 @@ func (t *LevelDB) Query(operation Operation, reply *Reply) error {
 		// as a directory, its path must end with '/' as well
 		// no access validation
 		log.Printf("(uid,gid)=%v,%v mkdir %v", operation.Uid, operation.Gid, operation.Path);
-		dirAccess := DirAccess {
+		dirAccess := access.DirAccess {
 			operation.Uid,
 			operation.Gid,
-			Ugo2Mode(7, 5, 5),
+			access.Ugo2Mode(7, 5, 5),
 			// TODO: get mode config from args && update pairlist
 			operation.PairList}
-		if err := t.db.Put([]byte(DirentTransfer(operation.Path)), DirAccess2ByteArray(dirAccess), nil); err != nil {
+		if err := t.db.Put([]byte(DirentTransfer(operation.Path)), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
 			log.Panicln("leveldb error!")
 		}
 	case "ls":
@@ -216,16 +172,16 @@ func (t *LevelDB) Query(operation Operation, reply *Reply) error {
 
 func initialize(db *leveldb.DB) {
 	// create the root directory
-	dirAccess := DirAccess{0, 0, Ugo2Mode(7, 5, 5), nil}
-	if err := db.Put([]byte("/"), DirAccess2ByteArray(dirAccess), nil); err != nil {
+	dirAccess := access.DirAccess{0, 0, access.Ugo2Mode(7, 5, 5), nil}
+	if err := db.Put([]byte("/"), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
 		log.Fatalln("error when creating /")
 	}
 	// create home directoy holder for all users
-	if err := db.Put([]byte(DirentTransfer("/home/")), DirAccess2ByteArray(dirAccess), nil); err != nil {
+	if err := db.Put([]byte(DirentTransfer("/home/")), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
 		log.Fatalln("error when creating /home/")
 	}
 	// create home directory for root
-	if err := db.Put([]byte(DirentTransfer("/root/")), DirAccess2ByteArray(dirAccess), nil); err != nil {
+	if err := db.Put([]byte(DirentTransfer("/root/")), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
 		log.Fatalln("error when creating /root/")
 	}
 	// create home directory for users other than root
@@ -234,10 +190,10 @@ func initialize(db *leveldb.DB) {
 		if uid == 0 {
 			continue
 		}
-		dirAccess = DirAccess{uid, gid, Ugo2Mode(7, 5, 5), nil}
+		dirAccess = access.DirAccess{uid, gid, access.Ugo2Mode(7, 5, 5), nil}
 		log.Printf("user=%v uid,gid=%v,%v\n", username, uid, gid)
 		home := "/home/" + username + "/"
-		if err := db.Put([]byte(DirentTransfer(home)), DirAccess2ByteArray(dirAccess), nil); err != nil {
+		if err := db.Put([]byte(DirentTransfer(home)), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
 			log.Fatalln("error when creating /home/" + username + "/")
 		}
 	}

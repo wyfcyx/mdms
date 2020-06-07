@@ -2,6 +2,9 @@ package access
 
 import (
 	"fmt"
+	"log"
+	"encoding/gob"
+	"bytes"
 )
 
 type DirAccess struct {
@@ -22,6 +25,24 @@ func Ugo2Mode (u uint16, g uint16, o uint16) uint16 {
 
 func Mode2Ugo(mode uint16) (uint16, uint16, uint16) {
 	return (mode >> 6) & 7, (mode >> 3) & 7, mode & 7
+}
+
+func DirAccess2ByteArray(dirAccess DirAccess) []byte {
+	buf := new(bytes.Buffer)
+	enc := gob.NewEncoder(buf)
+	if err := enc.Encode(dirAccess); err != nil {
+		log.Fatalln("error when encoding dirAccess: ", err)
+	}
+	return buf.Bytes()
+}
+
+func ByteArray2DirAccess(byteArray []byte) DirAccess {
+	dec := gob.NewDecoder(bytes.NewBuffer(byteArray))
+	var dirAccess DirAccess
+	if err := dec.Decode(&dirAccess); err != nil {
+		log.Fatalln("error when decoding dirAccess: ", err)
+	}
+	return dirAccess	
 }
 
 func (dirAccess DirAccess) DirAccessCheck(uid uint16, gid uint16, flag uint16) bool {
