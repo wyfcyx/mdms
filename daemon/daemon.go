@@ -27,7 +27,7 @@ func CheckOpacity(path string, uid uint16, gid uint16, dclient *rpc.Client) (boo
 		return true, "", reply.MDirAccess
 	} else {
 		// not passed
-		return false, reply.Info, access.DirAccess{}
+		return false, errors.ErrorString(reply.R), access.DirAccess{}
 	}
 }
 
@@ -122,6 +122,7 @@ func main() {
 		split := strings.Split(command, " ")
 		c_type := split[0]
 		path := split[1]
+		args := split[2:]
 		
 		result := ""
 		// send back to local client
@@ -139,8 +140,7 @@ func main() {
 					gid,
 					"mkdir",
 					path,
-					nil,
-					// TODO: select another mode other than default: 755
+					args,
 					dirAccess.PairList}
 				var reply mrpc.DReply
 				err = dclient.Call("LevelDB.Query", operation, &reply)
@@ -152,7 +152,7 @@ func main() {
 				}
 				result = errors.ErrorString(reply.R)
 			} else {
-				result = errors.ErrorString(errors.ACCESS_DENIED)
+				result = errors.ErrorString(errors.ACCESS_DENIED) 
 			}
 		case "ls":
 			// access validation: check opacity from root to path's
@@ -205,27 +205,50 @@ func main() {
 		case "stat":
 			// access validation: check opacity from root to path's parent
 			passed, _, _ := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
-			if passed {
-				operation := mrpc.DOperation {
-					uid,
-					gid,
-					"stat",
-					path,
-					nil,
-					nil}
-				var reply mrpc.DReply		
-				err := dclient.Call("LevelDB.Query", operation, &reply)
-				// TODO: select a specific server
-				if err != nil {
-					log.Fatalln("error during rpc: ", err)
-				} else if reply.R < 0 {
-					fmt.Printf("operation failed: reply = %v info = %v", reply.R, reply.Info)
-					result = errors.ErrorString(reply.R)
+			if utils.IsDir(path) {
+				if passed {
+					operation := mrpc.DOperation {
+						uid,
+						gid,
+						"stat",
+						path,
+						nil,
+						nil}
+					var reply mrpc.DReply		
+					err := dclient.Call("LevelDB.Query", operation, &reply)
+					// TODO: select a specific server
+					if err != nil {
+						log.Fatalln("error during rpc: ", err)
+					} else if reply.R < 0 {
+						fmt.Printf("operation failed: reply = %v info = %v", reply.R, reply.Info)
+						result = errors.ErrorString(reply.R)
+					} else {
+						result = reply.MDirAccess.GetString()
+					}
 				} else {
-					result = reply.MDirAccess.GetString()
+					result = errors.ErrorString(errors.ACCESS_DENIED)
 				}
 			} else {
-				result = errors.ErrorString(errors.ACCESS_DENIED)
+				if passed {
+					operation := mrpc.FOperation {
+						uid,
+						gid,
+						"stat",
+						path,
+						nil}
+					var reply mrpc.FReply
+					err := fclient.Call("LevelDB.Query", operation, &reply)
+					if err != nil {
+						log.Fatalln("error during rpc: ", err)
+					} else if reply.R < 0 {
+						fmt.Printf("operation failed: reply = %v info = %v", errors.ErrorString(reply.R), reply.Info)
+						result = errors.ErrorString(reply.R)
+					} else {
+						result = reply.Info
+					}
+				} else {
+					result = errors.ErrorString(errors.ACCESS_DENIED)
+				}
 			}
 		case "create":
 			pass, _, dirAccess := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
@@ -264,6 +287,28 @@ func main() {
 					log.Printf("operation failed: reply = %v info = %v", errors.ErrorString(reply.R), reply.Info)
 				}
 				result = errors.ErrorString(reply.R)
+			} else {
+				result = errors.ErrorString(errors.ACCESS_DENIED)
+			}
+		case "access":
+			pass, _, _ := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
+			if pass {
+				operation := mrpc.DOperation {
+					uid,
+					gid,
+					"access",
+					path,
+					args,
+					nil}
+				var reply mrpc.DReply
+				if err := dclient.Call("LevelDB.Query", operation, &reply); err != nil {
+					log.Fatalln("error during rpc: ", err)
+				}
+				if reply.R < 0 {
+					result = errors.ErrorString(reply.R)
+				} else {
+					result = "OK"
+				}
 			} else {
 				result = errors.ErrorString(errors.ACCESS_DENIED)
 			}

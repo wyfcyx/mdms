@@ -25,7 +25,16 @@ func commandValidation(command string) bool {
 			fmt.Println("Invalid directory path")
 			return false	
 		}
+	case "create", "delete":
+		if !utils.IsFile(path) {
+			fmt.Println("Invalid file path")
+			return false
+		}
 	default:
+		if !utils.IsDir(path) && !utils.IsFile(path) {
+			fmt.Println("Invalid path")
+			return false
+		}
 	}
 	return true
 }
