@@ -9,6 +9,7 @@ const (
 	ACCESS_DENIED int = -1
 	NO_SUCH_FILEDIR int = -2
 	FILEDIR_EXISTED int = -3
+	MODE_INVALID int = -4
 )
 
 func ErrorString(rc int) string {
@@ -20,7 +21,9 @@ func ErrorString(rc int) string {
 	case NO_SUCH_FILEDIR:
 		return "NO_SUCH_FILEDIR"
 	case FILEDIR_EXISTED:
-		return "FILE_DIR_EXISTED"
+		return "FILEDIR_EXISTED"
+	case MODE_INVALID:
+		return "MODE_INVALID"
 	default:
 		log.Fatalln("unrecognized error")
 	}

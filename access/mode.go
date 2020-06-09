@@ -4,6 +4,7 @@ const (
 	R uint16 = 4
 	W uint16 = 2
 	X uint16 = 1
+	F uint16 = 0
 )
 
 func Ugo2Mode (u uint16, g uint16, o uint16) uint16 {

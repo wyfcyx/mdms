@@ -3,7 +3,7 @@ package main
 import (
     "github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/util"
-    //"strconv"
+    "strconv"
     "fmt"
     "net"
     //"net/http"
@@ -52,7 +52,10 @@ func Pass(path string, uid uint16, gid uint16, t *LevelDB) (bool, access.DirAcce
 	log.Printf("pass uid,gid=%v,%v path=%v\n", uid, gid, path)
 	// return if (uid, gid) can pass all the directories from / to <path>
 	// search path as a key in KVS
-	byteArray, _ := t.db.Get([]byte(utils.DirentTransfer(path)), nil)
+	byteArray, err := t.db.Get([]byte(utils.DirentTransfer(path)), nil)
+	if err != nil {
+		log.Fatalf("cannot found path %v in Pass\n", path)
+	}
 	
 	// change byteArray into DirAccess
 	dirAccess := access.ByteArray2DirAccess(byteArray)
@@ -102,11 +105,28 @@ func (t *LevelDB) Query(operation mrpc.DOperation, reply *mrpc.DReply) error {
 			reply.R = errors.FILEDIR_EXISTED
 			break
 		}
+		var mode uint16
+		if len(operation.Args) == 0 {
+			mode = access.Ugo2Mode(7, 5, 5)
+		} else {
+			modeInt, err := strconv.Atoi(operation.Args[0])
+			if err != nil {
+				log.Fatalln("error when parsing mkdir: ", err)
+			}
+			mode = uint16(modeInt)
+		}
+
+		u, g, o := access.Mode2Ugo(mode)
+		// assert o is a subset of g && g is a subset of u
+		if !((g & o == o) && (u & g == g)) {
+			reply.R = errors.MODE_INVALID
+			break
+		}
+
 		dirAccess := access.DirAccess {
 			operation.Uid,
 			operation.Gid,
-			access.Ugo2Mode(7, 5, 5),
-			// TODO: get mode config from args && update pairlist
+			mode,
 			operation.PairList}
 		if err := t.db.Put([]byte(utils.DirentTransfer(operation.Path)), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
 			log.Panicln("leveldb error!")
@@ -152,6 +172,27 @@ func (t *LevelDB) Query(operation mrpc.DOperation, reply *mrpc.DReply) error {
 		} else {
 			reply.R = errors.ACCESS_DENIED
 		}
+	case "access":
+		log.Printf("(uid,gid)=%v,%v access %v", operation.Uid, operation.Gid, operation.Path)
+		if !DirExisted(operation.Path, t) {
+			reply.R = errors.NO_SUCH_FILEDIR
+			break
+		}
+		byteArray, err := t.db.Get([]byte(utils.DirentTransfer(operation.Path)), nil)
+		if err != nil {
+			log.Fatalln("error in LevelDB: ", err)
+		}
+		dirAccess := access.ByteArray2DirAccess(byteArray)
+		modeInt, err := strconv.Atoi(operation.Args[0])
+		if err != nil {
+			log.Fatalln("error when parsing access arguments")
+		}
+		mode := uint16(modeInt)
+		if mode > 0 && !dirAccess.DirAccessCheck(operation.Uid, operation.Gid, mode) {
+			reply.R = errors.ACCESS_DENIED
+		} else {
+			reply.R = errors.OK
+		}
 	}
 
 	return nil
@@ -160,7 +201,7 @@ func (t *LevelDB) Query(operation mrpc.DOperation, reply *mrpc.DReply) error {
 func initialize(db *leveldb.DB) {
 	// create the root directory
 	dirAccess := access.DirAccess{0, 0, access.Ugo2Mode(7, 5, 5), nil}
-	if err := db.Put([]byte("/"), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
+	if err := db.Put([]byte(utils.DirentTransfer("/")), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
 		log.Fatalln("error when creating /")
 	}
 	// create home directoy holder for all users
