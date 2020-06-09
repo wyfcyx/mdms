@@ -107,7 +107,6 @@ func main() {
 		if err := os.RemoveAll(dbPath); err != nil {
 			log.Fatalln("error when remove previous db: ", err)
 		}
-		return
 	}	
 
 	// create & open database
