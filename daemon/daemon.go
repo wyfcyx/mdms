@@ -22,11 +22,9 @@ var (
 	M int
 	DMSClients []*rpc.Client
 	FMSClients []*rpc.Client	
+	Debug bool
 )
 
-const (
-	Debug bool = false
-)
 // using "pass" command here
 func CheckOpacity(path string, uid uint16, gid uint16) (bool, string, access.DirAccess) {
 	operation := mrpc.DOperation{uid, gid, "pass", path, nil, nil}
@@ -64,7 +62,12 @@ func main() {
 		fmt.Println(err)
 		return
 	}
-	//fmt.Println(os.Args[1])
+
+	if os.Args[2] == "1" {
+		Debug = true
+	} else {
+		Debug = false
+	}
 
 	// receive local command from c
     l, err := net.Listen("tcp4", "localhost:" + strconv.Itoa(6789 + local_rank))
@@ -182,9 +185,6 @@ func main() {
 				path = path[:len(path) - 1]
 			}
 		}
-		if Debug {
-			log.Printf("%v %v %v\n", c_type, path, args)
-		}
 
 		result := ""
 		// send back to local client
@@ -256,13 +256,13 @@ func main() {
 				for i := 0; i < N; i++ {
 					<-dCallChans[i]
 					if dreplys[i].R < 0 {
-						log.Fatalln("error when rmdir")
+						log.Fatalf("error when rmdir on dms#%v: %v", i, errors.ErrorString(dreplys[i].R))
 					}
 				}
 				for i := 0; i < M; i++ {
 					<-fCallChans[i]
 					if freplys[i].R < 0 {
-						log.Fatalln("error when rmdir")
+						log.Fatalln("error when rmdir on fms#%v: %v", i, errors.ErrorString(freplys[i].R))
 					}
 				}
 				result = errors.ErrorString(errors.OK)
@@ -375,7 +375,7 @@ func main() {
 							nil,
 							nil}
 						var dreply mrpc.DReply
-						dclient := DMSClients[hash.Hashing(operation.Path) % N]
+						dclient := DMSClients[hash.Hashing(operation.Path + "/") % N]
 						err := dclient.Call("LevelDB.Query", doperation, &dreply)
 						if err != nil {
 							log.Fatalln("error during rpc: ", err)
@@ -463,7 +463,10 @@ func main() {
 		if result == "" {
 			result = "OK"
 		}
-		fmt.Printf("result = %v\n", result)
+
+		if Debug {
+			log.Printf("%v %v %v result = %v\n", c_type, path, args, result)
+		}
         if _, err := c.Write([]byte(result)); err != nil {
 			log.Fatalln("error when sending result to client")
         }
