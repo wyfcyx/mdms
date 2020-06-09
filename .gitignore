@@ -4,3 +4,4 @@ server/fms/fms
 server/nms/nms
 daemon/daemon
 go.sum
+.idea/
