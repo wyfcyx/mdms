@@ -27,7 +27,7 @@ var (
 )
 
 const (
-	Debug bool = true
+	Debug bool = false
 )
 
 type LevelDB struct {

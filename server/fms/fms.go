@@ -22,7 +22,7 @@ var (
 )
 
 const (
-	Debug bool = true
+	Debug bool = false
 )
 
 type Operation struct {
