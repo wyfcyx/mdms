@@ -5,7 +5,17 @@ import (
 	"os/user"
 	"log"
 	"strings"
+	"strconv"
 )
+
+func GetID(addr string) int {
+	p := strings.Split(addr, ":")[1]
+	pInt, err := strconv.Atoi(p)
+	if err != nil {
+		log.Fatalln("error when parsing in GetID: ", err)
+	}
+	return pInt - 1234
+}
 
 func IsDir(path string) bool {
 	return path[0] == '/' && path[len(path) - 1] == '/'

@@ -275,8 +275,12 @@ func main() {
 	// read group file get group info
 	GroupMap = access.LoadGroupConfig(mdmsHome + "group", UserMap)
 
+	addr := os.Args[1]
+	id := utils.GetID(addr)
+	idStr := strconv.Itoa(id)
+
 	// check if previous db store exist & delete
-	dbPath := mdmsHome + "dmsdb"
+	dbPath := mdmsHome + "dmsdb" + idStr
 	if utils.Exists(dbPath) {
 		if err := os.RemoveAll(dbPath); err != nil {
 			log.Fatalln("error when remove previous db: ", err)
@@ -298,7 +302,7 @@ func main() {
 	server := rpc.NewServer()
 	server.Register(levelDB)
 
-	l, e := net.Listen("tcp", "10.1.0.20:1234")
+	l, e := net.Listen("tcp", addr)
 	if e != nil {
 		log.Fatal("listen error: ", e)
 	}
