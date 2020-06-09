@@ -7,6 +7,14 @@ import (
 	"strings"
 )
 
+func IsDir(path string) bool {
+	return path[0] == '/' && path[len(path) - 1] == '/'
+}
+
+func IsFile(path string) bool {
+	return path[0] == '/' && path[len(path) - 1] != '/'
+}
+
 func GetFatherDirectory(path string) string {
 	for i := len(path) - 2; i >= 0; i-- {
 		if path[i] == '/' {

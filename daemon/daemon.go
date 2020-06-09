@@ -11,27 +11,14 @@ import (
 
 	"github.com/wyfcyx/mdms/access"
 	"github.com/wyfcyx/mdms/utils"
+	"github.com/wyfcyx/mdms/mrpc"
+	"github.com/wyfcyx/mdms/errors"
 )
-
-type Operation struct {
-	Uid uint16
-	Gid uint16
-	Command string
-	Path string
-	Args []string
-	PairList []uint16
-}
-
-type Reply struct {
-	R int
-	Info string
-	MDirAccess access.DirAccess
-}
 
 // using "pass" command here
 func CheckOpacity(path string, uid uint16, gid uint16, dclient *rpc.Client) (bool, string, access.DirAccess) {
-	operation := Operation{uid, gid, "pass", path, nil, nil}
-	var reply Reply
+	operation := mrpc.DOperation{uid, gid, "pass", path, nil, nil}
+	var reply mrpc.DReply
 	if err := dclient.Call("LevelDB.Query", operation, &reply); err != nil {
 		log.Fatalln("error during rpc: ", err)
 	}
@@ -76,15 +63,14 @@ func main() {
     }
 	log.Println("connected to dms")
 	defer dclient.Close()
-	/*
+
 	fclient, err := rpc.Dial("tcp", "10.1.0.20:1235")
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 	log.Println("connected to fms")
-	*/
-
+	defer fclient.Close()
 
 	// read uid from client
 	uidArray := make([]byte, 1024)
@@ -145,10 +131,10 @@ func main() {
 		case "mkdir":
 			// access validation: check opacity from root to path's father dir
 			passed, _, dirAccess := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
-			if passed && dirAccess.DirAccessCheck(uid, gid, 2) {
+			if passed && dirAccess.DirAccessCheck(uid, gid, access.W) {
 				// we need write access as well
 				// now, send request to correct node
-				operation := Operation {
+				operation := mrpc.DOperation {
 					uid,
 					gid,
 					"mkdir",
@@ -156,70 +142,130 @@ func main() {
 					nil,
 					// TODO: select another mode other than default: 755
 					dirAccess.PairList}
-				var reply Reply
+				var reply mrpc.DReply
 				err = dclient.Call("LevelDB.Query", operation, &reply)
 				// TODO: select a correct server using consistent hashing
 				if err != nil {
 					log.Fatalln("error during rpc: ", err)
 				} else if reply.R < 0 {
-					fmt.Printf("operation failed: reply = %v info = %v", reply.R, reply.Info)
+					log.Printf("operation failed: reply = %v info = %v", reply.R, reply.Info)
 				}
-				result = "OK"
+				result = errors.ErrorString(reply.R)
 			} else {
-				fmt.Println("access denied")
-				//result = info + " access denied"
-				result = "access denied"
+				result = errors.ErrorString(errors.ACCESS_DENIED)
 			}
 		case "ls":
-			 // access validation: check opacity from root to path's
+			// access validation: check opacity from root to path's
 			passed, _, dirAccess := CheckOpacity(path, uid, gid, dclient)
-			if passed && dirAccess.DirAccessCheck(uid, gid, 4) {
+			if passed && dirAccess.DirAccessCheck(uid, gid, access.R) {
 				// we need read access as well to list
-				operation := Operation {
+				doperation := mrpc.DOperation {
 					uid,
 					gid,
 					"ls",
 					path,
 					nil,
 					nil}
-				var reply Reply
-				err := dclient.Call("LevelDB.Query", operation, &reply)
+				var dreply mrpc.DReply
+				dCallChan := make(chan *rpc.Call, 1)
+				dclient.Go("LevelDB.Query", doperation, &dreply, dCallChan)
+
+				foperation := mrpc.FOperation {
+					uid,
+					gid,
+					"ls",
+					path,
+					nil}
+				var freply mrpc.FReply
+				fCallChan := make(chan *rpc.Call, 1)
+				fclient.Go("LevelDB.Query", foperation, &freply, fCallChan)
+
+				<-dCallChan
+				<-fCallChan
+
 				// TODO: select a specific server using consistent hashing
-				if err != nil {
-					log.Fatalln("error during rpc: ", err)
-				} else if reply.R < 0 {
-					fmt.Printf("operation failed: reply = %v info = %v", reply.R, reply.Info)
+				if dreply.R < 0 {
+					log.Printf("operation failed: reply = %v info = %v", errors.ErrorString(dreply.R), dreply.Info)
+					result = errors.ErrorString(dreply.R)
+					break
+				} else {
+					result += dreply.Info
 				}
-				result = reply.Info
+
+				if freply.R < 0 {
+					log.Printf("operation failed: reply = %v info = %v", errors.ErrorString(freply.R), freply.Info)
+					result = errors.ErrorString(freply.R)
+					break
+				} else {
+					result += freply.Info
+				}
 			} else {
-				fmt.Println("access denied")
-				//result = info
-				result = "access denied"
+				result = errors.ErrorString(errors.ACCESS_DENIED)
 			}
 		case "stat":
 			// access validation: check opacity from root to path's parent
 			passed, _, _ := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
 			if passed {
-				operation := Operation {
+				operation := mrpc.DOperation {
 					uid,
 					gid,
 					"stat",
 					path,
 					nil,
 					nil}
-				var reply Reply		
+				var reply mrpc.DReply		
 				err := dclient.Call("LevelDB.Query", operation, &reply)
 				// TODO: select a specific server
 				if err != nil {
 					log.Fatalln("error during rpc: ", err)
 				} else if reply.R < 0 {
 					fmt.Printf("operation failed: reply = %v info = %v", reply.R, reply.Info)
+					result = errors.ErrorString(reply.R)
+				} else {
+					result = reply.MDirAccess.GetString()
 				}
-				result = reply.MDirAccess.GetString()
 			} else {
-				fmt.Println("access denied")
-				//result = info
-				result = "access denied"
+				result = errors.ErrorString(errors.ACCESS_DENIED)
+			}
+		case "create":
+			pass, _, dirAccess := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
+			if pass && dirAccess.DirAccessCheck(uid, gid, access.W) {
+				operation := mrpc.FOperation {
+					uid,
+					gid,
+					"create",
+					path,
+					nil}
+				var reply mrpc.FReply
+				if err := fclient.Call("LevelDB.Query", operation, &reply); err != nil {
+					log.Fatalln("error during rpc")
+				}
+				if reply.R < 0 {
+					log.Printf("operation failed: reply = %v info = %v", errors.ErrorString(reply.R), reply.Info)
+				}
+				result = errors.ErrorString(reply.R)
+			} else {
+				result = errors.ErrorString(errors.ACCESS_DENIED)
+			}
+		case "delete":
+			pass, _, dirAccess := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
+			if pass && dirAccess.DirAccessCheck(uid, gid, access.W) {
+				operation := mrpc.FOperation {
+					uid,
+					gid,
+					"delete",
+					path,
+					nil}
+				var reply mrpc.FReply
+				if err := fclient.Call("LevelDB.Query", operation, &reply); err != nil {
+					log.Fatalln("error during rpc")
+				}
+				if reply.R < 0 {
+					log.Printf("operation failed: reply = %v info = %v", errors.ErrorString(reply.R), reply.Info)
+				}
+				result = errors.ErrorString(reply.R)
+			} else {
+				result = errors.ErrorString(errors.ACCESS_DENIED)
 			}
 		}
 		

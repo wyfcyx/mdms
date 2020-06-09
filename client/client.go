@@ -8,15 +8,9 @@ import (
 	"strings"
 	//"io"
 	"strconv"
+
+	"github.com/wyfcyx/mdms/utils"
 )
-
-func isDir(path string) bool {
-	return path[0] == '/' && path[len(path) - 1] == '/'
-}
-
-func isFile(path string) bool {
-	return path[0] == '/' && path[len(path) - 1] != '/'
-}
 
 func commandValidation(command string) bool {
 	split := strings.Split(command, " ")
@@ -27,7 +21,7 @@ func commandValidation(command string) bool {
 	//fmt.Printf("c_type = %v path = %v\n", c_type, path)
 	switch c_type {
 	case "mkdir", "ls":
-		if !isDir(path) {
+		if !utils.IsDir(path) {
 			fmt.Println("Invalid directory path")
 			return false	
 		}
