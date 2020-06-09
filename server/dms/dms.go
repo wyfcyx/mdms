@@ -24,11 +24,9 @@ import (
 var (
 	UserMap map[string]uint32
 	GroupMap map[uint16][]uint16
+	Debug bool
 )
 
-const (
-	Debug bool = false
-)
 
 type LevelDB struct {
 	//m sync.Mutex
@@ -143,10 +141,7 @@ func (t *LevelDB) Query(operation mrpc.DOperation, reply *mrpc.DReply) error {
 		if Debug {
 			log.Printf("(uid,gid)=%v,%v rmdir %v", operation.Uid, operation.Gid, operation.Path)
 		}
-		if !DirExisted(operation.Path, t) {
-			reply.R = errors.NO_SUCH_FILEDIR
-			break
-		}
+		
 		// remove all direct/indirect sub-directories like "ls"
 		prefixL := operation.Path
 		prefixR := operation.Path[:len(operation.Path) - 1] + "]"
@@ -173,10 +168,7 @@ func (t *LevelDB) Query(operation mrpc.DOperation, reply *mrpc.DReply) error {
 		if Debug {
 			log.Printf("(uid,gid)=%v,%v ls %v", operation.Uid, operation.Gid, operation.Path)
 		}
-		if !DirExisted(operation.Path, t) {
-			reply.R = errors.NO_SUCH_FILEDIR
-			break
-		}
+		
 		// get all directories which start at given path
 		prefixL := operation.Path[:len(operation.Path) - 1] + "\\"
 		prefixR := strings.Replace(prefixL, "\\", "]", 1)
@@ -278,6 +270,12 @@ func main() {
 	addr := os.Args[1]
 	id := utils.GetID(addr)
 	idStr := strconv.Itoa(id)
+
+	if os.Args[2] == "1" {
+		Debug = true
+	} else {
+		Debug = false
+	}
 
 	// check if previous db store exist & delete
 	dbPath := mdmsHome + "dmsdb" + idStr
