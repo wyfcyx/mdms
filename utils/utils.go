@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/user"
 	"log"
+	"strings"
 )
 
 func GetFatherDirectory(path string) string {
@@ -13,6 +14,20 @@ func GetFatherDirectory(path string) string {
 		}
 	}
 	return path
+}
+
+func DirentTransfer(path string) string {
+    for i := len(path) - 2; i >= 0; i-- {
+        if path[i] == '/' {
+            path = path[:i] + "\\" + path[i + 1:]
+            break
+        }
+    }
+    return path
+}
+
+func DirentTransferBack(path string) string {
+    return strings.Replace(path, "\\", "/", 1)
 }
 
 func Home() string {

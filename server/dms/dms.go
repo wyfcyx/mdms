@@ -17,6 +17,8 @@ import (
 
 	"github.com/wyfcyx/mdms/access"
 	"github.com/wyfcyx/mdms/utils"
+	"github.com/wyfcyx/mdms/errors"
+	"github.com/wyfcyx/mdms/mrpc"
 )
 
 var (
@@ -24,42 +26,12 @@ var (
 	GroupMap map[uint16][]uint16
 )
 
-type Operation struct {
-	Uid uint16 
-	Gid uint16
-	Command string
-	Path string
-	Args []string
-	PairList []uint16
-}
-
 type LevelDB struct {
 	//m sync.Mutex
 	db *leveldb.DB
 }
 
 var levelDB *LevelDB
-
-
-type Reply struct {
-	R int
-	Info string
-	MDirAccess access.DirAccess
-}
-
-func DirentTransfer(path string) string {
-    for i := len(path) - 2; i >= 0; i-- {
-        if path[i] == '/' {
-            path = path[:i] + "\\" + path[i + 1:]
-            break
-        }
-    }
-    return path
-}
-
-func DirentTransferBack(path string) string {
-    return strings.Replace(path, "\\", "/", 1)
-}
 
 func Access(path string, t *LevelDB) (bool, string) {
 	// Access path's father directory
@@ -69,7 +41,7 @@ func Access(path string, t *LevelDB) (bool, string) {
 	curr := ""
 	for i := 0; i < depth; i++ {
 		curr = curr + split[i] + "/"
-		if _, err := t.db.Get([]byte(DirentTransfer(curr)), nil); err != nil {
+		if _, err := t.db.Get([]byte(utils.DirentTransfer(curr)), nil); err != nil {
 			return false, curr
 		}
 	}
@@ -80,11 +52,8 @@ func Pass(path string, uid uint16, gid uint16, t *LevelDB) (bool, access.DirAcce
 	log.Printf("pass uid,gid=%v,%v path=%v\n", uid, gid, path)
 	// return if (uid, gid) can pass all the directories from / to <path>
 	// search path as a key in KVS
-	byteArray, err := t.db.Get([]byte(DirentTransfer(path)), nil)
-	if err != nil {
-		log.Printf("cannot found path %v in KVS\n", path)
-		return false, access.DirAccess{}
-	}
+	byteArray, _ := t.db.Get([]byte(utils.DirentTransfer(path)), nil)
+	
 	// change byteArray into DirAccess
 	dirAccess := access.ByteArray2DirAccess(byteArray)
 	// check if (uid, gid) pair is valid
@@ -105,35 +74,52 @@ func Pass(path string, uid uint16, gid uint16, t *LevelDB) (bool, access.DirAcce
 	return true, dirAccess
 }
 
-func Stat(path string, t *LevelDB) access.DirAccess {
+func Stat(path string, t *LevelDB) (int, access.DirAccess) {
 	fmt.Println("start Stat!")
-	byteArray, err := t.db.Get([]byte(DirentTransfer(path)), nil)
+	byteArray, err := t.db.Get([]byte(utils.DirentTransfer(path)), nil)
 	if err != nil {
-		log.Fatalf("cannot found path %v in KVS\n", path)
+		return errors.NO_SUCH_FILEDIR, access.DirAccess{}
 	}
-	return access.ByteArray2DirAccess(byteArray)
+	return errors.OK, access.ByteArray2DirAccess(byteArray)
 }
 
-func (t *LevelDB) Query(operation Operation, reply *Reply) error {
+func DirExisted(path string, t *LevelDB) bool {
+	has, err := t.db.Has([]byte(utils.DirentTransfer(path)), nil)
+	if err != nil {
+		log.Fatalln("error when querying dir existed")
+	}
+	return has
+}
+
+func (t *LevelDB) Query(operation mrpc.DOperation, reply *mrpc.DReply) error {
 	switch operation.Command {
 	case "mkdir":
 		// create directory, absolute path start with '/'
 		// as a directory, its path must end with '/' as well
 		// no access validation
 		log.Printf("(uid,gid)=%v,%v mkdir %v", operation.Uid, operation.Gid, operation.Path);
+		if DirExisted(operation.Path, t) {
+			reply.R = errors.FILEDIR_EXISTED
+			break
+		}
 		dirAccess := access.DirAccess {
 			operation.Uid,
 			operation.Gid,
 			access.Ugo2Mode(7, 5, 5),
 			// TODO: get mode config from args && update pairlist
 			operation.PairList}
-		if err := t.db.Put([]byte(DirentTransfer(operation.Path)), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
+		if err := t.db.Put([]byte(utils.DirentTransfer(operation.Path)), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
 			log.Panicln("leveldb error!")
 		}
+		reply.R = errors.OK
 	case "ls":
 		// now directory only
 		// access father directory
 		log.Printf("(uid,gid)=%v,%v ls %v", operation.Uid, operation.Gid, operation.Path)
+		if !DirExisted(operation.Path, t) {
+			reply.R = errors.NO_SUCH_FILEDIR
+			break
+		}
 		// get all directories which start at given path
 		prefixL := operation.Path[:len(operation.Path) - 1] + "\\"
 		prefixR := strings.Replace(prefixL, "\\", "]", 1)
@@ -147,23 +133,24 @@ func (t *LevelDB) Query(operation Operation, reply *Reply) error {
 			t = t + "\n" + strings.Replace(string(iter.Key()), prefixL, "", 1)
 		}
 		iter.Release()
-		reply.R = 0
+		reply.R = errors.OK 
 		reply.Info = t
+		// TODO: check whether the dir is existed
 	case "stat":
 		// now directory only
 		log.Printf("(uid,gid)=%v,%v stat %v", operation.Uid, operation.Gid, operation.Path)
-		reply.R = 0
-		reply.MDirAccess = Stat(operation.Path, t)
-		log.Printf("stat ok!")
+		reply.R, reply.MDirAccess = Stat(operation.Path, t)
 	case "pass":
+		if !DirExisted(operation.Path, t) {
+			reply.R = errors.NO_SUCH_FILEDIR
+			break
+		}
 		passed, dirAccess := Pass(operation.Path, operation.Uid, operation.Gid, t)
 		if passed {
-			log.Printf("passed!")
-			reply.R = 0
+			reply.R = errors.OK 
 			reply.MDirAccess = dirAccess
 		} else {
-			log.Printf("not passed!")
-			reply.R = -1
+			reply.R = errors.ACCESS_DENIED
 		}
 	}
 
@@ -177,11 +164,11 @@ func initialize(db *leveldb.DB) {
 		log.Fatalln("error when creating /")
 	}
 	// create home directoy holder for all users
-	if err := db.Put([]byte(DirentTransfer("/home/")), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
+	if err := db.Put([]byte(utils.DirentTransfer("/home/")), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
 		log.Fatalln("error when creating /home/")
 	}
 	// create home directory for root
-	if err := db.Put([]byte(DirentTransfer("/root/")), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
+	if err := db.Put([]byte(utils.DirentTransfer("/root/")), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
 		log.Fatalln("error when creating /root/")
 	}
 	// create home directory for users other than root
@@ -193,7 +180,7 @@ func initialize(db *leveldb.DB) {
 		dirAccess = access.DirAccess{uid, gid, access.Ugo2Mode(7, 5, 5), nil}
 		log.Printf("user=%v uid,gid=%v,%v\n", username, uid, gid)
 		home := "/home/" + username + "/"
-		if err := db.Put([]byte(DirentTransfer(home)), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
+		if err := db.Put([]byte(utils.DirentTransfer(home)), access.DirAccess2ByteArray(dirAccess), nil); err != nil {
 			log.Fatalln("error when creating /home/" + username + "/")
 		}
 	}
@@ -232,9 +219,9 @@ func main() {
 
 	l, e := net.Listen("tcp", "10.1.0.20:1234")
 	if e != nil {
-		log.Fatal("listen error : ", e)
+		log.Fatal("listen error: ", e)
 	}
-	fmt.Println("ready serve!")
+	fmt.Println("ready serving!")
 	//http.Serve(l, nil)
 	conCount := 0
 	for {

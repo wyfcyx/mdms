@@ -5,6 +5,7 @@ import (
 	"log"
 	"encoding/gob"
 	"bytes"
+
 )
 
 type DirAccess struct {
@@ -15,16 +16,8 @@ type DirAccess struct {
 }
 
 func (dirAccess DirAccess) GetString() string {
-	u, g, o := Mode2Ugo(dirAccess.Mode)
-	return fmt.Sprintf("uid=%v gid=%v ugo=%v%v%v", dirAccess.Uid, dirAccess.Gid, u, g, o)
-}
-
-func Ugo2Mode (u uint16, g uint16, o uint16) uint16 {
-	return u * 64 + g * 8 + o
-}
-
-func Mode2Ugo(mode uint16) (uint16, uint16, uint16) {
-	return (mode >> 6) & 7, (mode >> 3) & 7, mode & 7
+	//u, g, o := Mode2Ugo(dirAccess.Mode)
+	return fmt.Sprintf("uid=%v gid=%v %v", dirAccess.Uid, dirAccess.Gid, Mode2String(dirAccess.Mode))
 }
 
 func DirAccess2ByteArray(dirAccess DirAccess) []byte {
