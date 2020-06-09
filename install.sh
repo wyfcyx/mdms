@@ -19,3 +19,4 @@ fi
 \cp config/init ~/.mdms/init
 \cp config/passwd ~/.mdms/passwd
 \cp config/group ~/.mdms/group
+\cp config/nodes ~/.mdms/nodes

@@ -8,16 +8,29 @@ import (
 	"os"
 	"strings"
 	"log"
+	"bufio"
 
 	"github.com/wyfcyx/mdms/access"
 	"github.com/wyfcyx/mdms/utils"
 	"github.com/wyfcyx/mdms/mrpc"
 	"github.com/wyfcyx/mdms/errors"
+	"github.com/wyfcyx/mdms/hash"
 )
 
+var (
+	N int
+	M int
+	DMSClients []*rpc.Client
+	FMSClients []*rpc.Client	
+)
+
+const (
+	Debug bool = false
+)
 // using "pass" command here
-func CheckOpacity(path string, uid uint16, gid uint16, dclient *rpc.Client) (bool, string, access.DirAccess) {
+func CheckOpacity(path string, uid uint16, gid uint16) (bool, string, access.DirAccess) {
 	operation := mrpc.DOperation{uid, gid, "pass", path, nil, nil}
+	dclient := DMSClients[hash.Hashing(path) % N]
 	var reply mrpc.DReply
 	if err := dclient.Call("LevelDB.Query", operation, &reply); err != nil {
 		log.Fatalln("error during rpc: ", err)
@@ -29,6 +42,20 @@ func CheckOpacity(path string, uid uint16, gid uint16, dclient *rpc.Client) (boo
 		// not passed
 		return false, errors.ErrorString(reply.R), access.DirAccess{}
 	}
+}
+
+func GetInt(r *bufio.Reader) int {
+	buf, err := r.ReadBytes('\n')
+	if err != nil {
+		log.Fatalln("error when reading nodes: ", err)
+	}
+	str := string(buf)
+	str = str[:len(str) - 1]
+	n, err := strconv.Atoi(str)
+	if err != nil {
+		log.Fatalln("error when reading nodes: ", err)
+	}
+	return n
 }
 
 func main() {
@@ -55,23 +82,43 @@ func main() {
     defer c.Close()
 	log.Println("local client connected")
 
-	// send remote request to server 
-    dclient, err := rpc.Dial("tcp", "10.1.0.20:1234")
-    if err != nil {
-        fmt.Println(err)
-        return
-    }
-	log.Println("connected to dms")
-	defer dclient.Close()
-
-	fclient, err := rpc.Dial("tcp", "10.1.0.20:1235")
+	mdmsHome := utils.Home() + "/.mdms/"
+	f, err := os.Open(mdmsHome + "nodes")
 	if err != nil {
-		fmt.Println(err)
-		return
+		log.Fatalln("error when opening nodes: ", err)
 	}
-	log.Println("connected to fms")
-	defer fclient.Close()
-
+	r := bufio.NewReader(f)
+	N = GetInt(r)
+	DMSClients = make([]*rpc.Client, N)
+	for i := 0; i < N; i++ {
+		buf, err := r.ReadBytes('\n')
+		if err != nil {
+			log.Fatalln("error when reading nodes: ", err)
+		}
+		str := string(buf)
+		str = str[:len(str) - 1]
+		DMSClients[i], err = rpc.Dial("tcp", str)
+		if err != nil {
+			log.Fatalln("error when connecting to DMS: ", err)
+		}
+		defer DMSClients[i].Close()
+	}
+	M = GetInt(r)
+	FMSClients = make([]*rpc.Client, M)
+	for i := 0; i < M; i++ {
+		buf, err := r.ReadBytes('\n')
+		if err != nil {
+			log.Fatalln("error when reading nodes: ", err)
+		}
+		str := string(buf)
+		str = str[:len(str) - 1]
+		FMSClients[i], err = rpc.Dial("tcp", str)
+		if err != nil {
+			log.Fatalln("error when connecting to FMS: ", err)
+		}
+		defer FMSClients[i].Close()
+	}
+	
 	// read uid from client
 	uidArray := make([]byte, 1024)
 	if _, err := c.Read(uidArray); err != nil {
@@ -135,7 +182,9 @@ func main() {
 				path = path[:len(path) - 1]
 			}
 		}
-		log.Printf("%v %v %v\n", c_type, path, args)
+		if Debug {
+			log.Printf("%v %v %v\n", c_type, path, args)
+		}
 
 		result := ""
 		// send back to local client
@@ -144,7 +193,7 @@ func main() {
 		switch c_type {
 		case "mkdir":
 			// access validation: check opacity from root to path's father dir
-			passed, _, dirAccess := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
+			passed, _, dirAccess := CheckOpacity(utils.GetFatherDirectory(path), uid, gid)
 			if passed && dirAccess.DirAccessCheck(uid, gid, access.W) {
 				// we need write access as well
 				// now, send request to correct node
@@ -156,8 +205,8 @@ func main() {
 					args,
 					dirAccess.PairList}
 				var reply mrpc.DReply
+				dclient := DMSClients[hash.Hashing(operation.Path) % N]
 				err = dclient.Call("LevelDB.Query", operation, &reply)
-				// TODO: select a correct server using consistent hashing
 				if err != nil {
 					log.Fatalln("error during rpc: ", err)
 				} else if reply.R < 0 {
@@ -167,93 +216,118 @@ func main() {
 			} else {
 				result = errors.ErrorString(errors.ACCESS_DENIED) 
 			}
-		case "rmdir":
-			passed, _, dirAccess := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
+		case "rmdir": // request for all dms/fms
+			passed, _, dirAccess := CheckOpacity(utils.GetFatherDirectory(path), uid, gid)
 			if passed && dirAccess.DirAccessCheck(uid, gid, access.W) {
+				// distribute to every dms
 				doperation := mrpc.DOperation {
 					uid,
 					gid,
 					"rmdir",
 					path,
 					nil,
-					nil}
-				var dreply mrpc.DReply
-				dCallChan := make(chan *rpc.Call, 1)
-				dclient.Go("LevelDB.Query", doperation, &dreply, dCallChan)
-				
+					nil,
+				}
+				dreplys := make([]mrpc.DReply, N)
+				dCallChans := make([]chan *rpc.Call, N)
+				for i := 0; i < N; i++ {
+					dclient := DMSClients[hash.Hashing(doperation.Path) % N]
+					dCallChans[i] = make(chan *rpc.Call, 1)
+					dclient.Go("LevelDB.Query", doperation, &dreplys[i], dCallChans[i])
+				}
+
+				// distribute to every fms
 				foperation := mrpc.FOperation {
 					uid,
 					gid,
 					"rmdir",
 					path,
 					nil,
-				}	
-				var freply mrpc.FReply
-				fCallChan := make(chan *rpc.Call, 1)
-				fclient.Go("LevelDB.Query", foperation, &freply, fCallChan)
-
-				<-dCallChan
-				<-fCallChan
-
-				if dreply.R < 0 || freply.R < 0 {
-					log.Fatalln("error when rmdir")
+				}
+				freplys := make([]mrpc.FReply, M)
+				fCallChans := make([]chan *rpc.Call, M)
+				for i := 0; i < M; i++ {
+					fclient := FMSClients[hash.Hashing(foperation.Path) % M]
+					fCallChans[i] = make(chan *rpc.Call, 1)
+					fclient.Go("LevelDB.Query", foperation, &freplys[i], fCallChans[i])
 				}
 
+				// wait for all tasks to complete
+				for i := 0; i < N; i++ {
+					<-dCallChans[i]
+					if dreplys[i].R < 0 {
+						log.Fatalln("error when rmdir")
+					}
+				}
+				for i := 0; i < M; i++ {
+					<-fCallChans[i]
+					if freplys[i].R < 0 {
+						log.Fatalln("error when rmdir")
+					}
+				}
 				result = errors.ErrorString(errors.OK)
 			} else {
 				result = errors.ErrorString(errors.ACCESS_DENIED)
 			}
 		case "ls":
 			// access validation: check opacity from root to path's
-			passed, _, dirAccess := CheckOpacity(path, uid, gid, dclient)
+			passed, _, dirAccess := CheckOpacity(path, uid, gid)
 			if passed && dirAccess.DirAccessCheck(uid, gid, access.R) {
 				// we need read access as well to list
+				// distribute tasks to every dms
 				doperation := mrpc.DOperation {
 					uid,
 					gid,
 					"ls",
 					path,
 					nil,
-					nil}
-				var dreply mrpc.DReply
-				dCallChan := make(chan *rpc.Call, 1)
-				dclient.Go("LevelDB.Query", doperation, &dreply, dCallChan)
+					nil,
+				}
+				dreplys := make([]mrpc.DReply, N)
+				dCallChans := make([]chan *rpc.Call, N)
+				for i := 0; i < N; i++ {
+					dclient := DMSClients[hash.Hashing(doperation.Path) % N]
+					dCallChans[i] = make(chan *rpc.Call, 1)
+					dclient.Go("LevelDB.Query", doperation, &dreplys[i], dCallChans[i])
+				}
 
+				// distribute tasks to every fms
 				foperation := mrpc.FOperation {
 					uid,
 					gid,
 					"ls",
 					path,
-					nil}
-				var freply mrpc.FReply
-				fCallChan := make(chan *rpc.Call, 1)
-				fclient.Go("LevelDB.Query", foperation, &freply, fCallChan)
-
-				<-dCallChan
-				<-fCallChan
-
-				// TODO: select a specific server using consistent hashing
-				if dreply.R < 0 {
-					log.Printf("operation failed: reply = %v info = %v", errors.ErrorString(dreply.R), dreply.Info)
-					result = errors.ErrorString(dreply.R)
-					break
-				} else {
-					result += dreply.Info
+					nil,
+				}
+				freplys := make([]mrpc.FReply, M)
+				fCallChans := make([]chan *rpc.Call, M)
+				for i := 0; i < M; i++ {
+					fclient := FMSClients[hash.Hashing(foperation.Path) % M]
+					fCallChans[i] = make(chan *rpc.Call, 1)
+					fclient.Go("LevelDB.Query", foperation, &freplys[i], fCallChans[i])
 				}
 
-				if freply.R < 0 {
-					log.Printf("operation failed: reply = %v info = %v", errors.ErrorString(freply.R), freply.Info)
-					result = errors.ErrorString(freply.R)
-					break
-				} else {
-					result += freply.Info
+				// wait for every task to complete
+				for i := 0; i < N; i++ {
+					<-dCallChans[i]
+					if dreplys[i].R < 0 {
+						log.Fatalln("error when ls: ", errors.ErrorString(dreplys[i].R))
+					}
+					result += dreplys[i].Info
+				}
+				for i := 0; i < M; i++ {
+					<-fCallChans[i]
+					if freplys[i].R < 0 {
+						log.Fatalln("error when ls: ", errors.ErrorString(freplys[i].R))
+					}
+					result += freplys[i].Info
 				}
 			} else {
 				result = errors.ErrorString(errors.ACCESS_DENIED)
 			}
 		case "stat":
 			// access validation: check opacity from root to path's parent
-			passed, _, _ := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
+			passed, _, _ := CheckOpacity(utils.GetFatherDirectory(path), uid, gid)
 			if utils.IsDir(path) {
 				if passed {
 					operation := mrpc.DOperation {
@@ -264,8 +338,8 @@ func main() {
 						nil,
 						nil}
 					var reply mrpc.DReply		
+					dclient := DMSClients[hash.Hashing(operation.Path) % N]
 					err := dclient.Call("LevelDB.Query", operation, &reply)
-					// TODO: select a specific server
 					if err != nil {
 						log.Fatalln("error during rpc: ", err)
 					} else if reply.R < 0 {
@@ -287,6 +361,7 @@ func main() {
 						path,
 						nil}
 					var reply mrpc.FReply
+					fclient := FMSClients[hash.Hashing(operation.Path) % M]
 					err := fclient.Call("LevelDB.Query", operation, &reply)
 					if err != nil {
 						log.Fatalln("error during rpc: ", err)
@@ -300,6 +375,7 @@ func main() {
 							nil,
 							nil}
 						var dreply mrpc.DReply
+						dclient := DMSClients[hash.Hashing(operation.Path) % N]
 						err := dclient.Call("LevelDB.Query", doperation, &dreply)
 						if err != nil {
 							log.Fatalln("error during rpc: ", err)
@@ -316,7 +392,7 @@ func main() {
 				}
 			}
 		case "create":
-			pass, _, dirAccess := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
+			pass, _, dirAccess := CheckOpacity(utils.GetFatherDirectory(path), uid, gid)
 			if pass && dirAccess.DirAccessCheck(uid, gid, access.W) {
 				operation := mrpc.FOperation {
 					uid,
@@ -325,6 +401,7 @@ func main() {
 					path,
 					nil}
 				var reply mrpc.FReply
+				fclient := FMSClients[hash.Hashing(operation.Path) % M]
 				if err := fclient.Call("LevelDB.Query", operation, &reply); err != nil {
 					log.Fatalln("error during rpc")
 				}
@@ -336,7 +413,7 @@ func main() {
 				result = errors.ErrorString(errors.ACCESS_DENIED)
 			}
 		case "delete":
-			pass, _, dirAccess := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
+			pass, _, dirAccess := CheckOpacity(utils.GetFatherDirectory(path), uid, gid)
 			if pass && dirAccess.DirAccessCheck(uid, gid, access.W) {
 				operation := mrpc.FOperation {
 					uid,
@@ -345,6 +422,7 @@ func main() {
 					path,
 					nil}
 				var reply mrpc.FReply
+				fclient := FMSClients[hash.Hashing(operation.Path) % M]
 				if err := fclient.Call("LevelDB.Query", operation, &reply); err != nil {
 					log.Fatalln("error during rpc")
 				}
@@ -356,7 +434,7 @@ func main() {
 				result = errors.ErrorString(errors.ACCESS_DENIED)
 			}
 		case "access":
-			pass, _, _ := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
+			pass, _, _ := CheckOpacity(utils.GetFatherDirectory(path), uid, gid)
 			if pass {
 				operation := mrpc.DOperation {
 					uid,
@@ -366,6 +444,7 @@ func main() {
 					args,
 					nil}
 				var reply mrpc.DReply
+				dclient := DMSClients[hash.Hashing(operation.Path) % N]
 				if err := dclient.Call("LevelDB.Query", operation, &reply); err != nil {
 					log.Fatalln("error during rpc: ", err)
 				}
