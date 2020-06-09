@@ -108,7 +108,7 @@ func main() {
             fmt.Println(err)
             return
         }
-        fmt.Printf("Received message = " + string(recv[:]) + "\n")
+        //fmt.Printf("Received message = " + string(recv[:]) + "\n")
 		
 		// parse the command into c_type and path
 		e := 0
@@ -124,6 +124,19 @@ func main() {
 		path := split[1]
 		args := split[2:]
 		
+		// fix wrong path
+		switch c_type {
+		case "mkdir", "ls", "rmdir", "access":
+			if !utils.IsDir(path) {
+				path += "/"
+			}
+		case "create", "delete":
+			if !utils.IsFile(path) {
+				path = path[:len(path) - 1]
+			}
+		}
+		log.Printf("%v %v %v\n", c_type, path, args)
+
 		result := ""
 		// send back to local client
 
@@ -153,6 +166,42 @@ func main() {
 				result = errors.ErrorString(reply.R)
 			} else {
 				result = errors.ErrorString(errors.ACCESS_DENIED) 
+			}
+		case "rmdir":
+			passed, _, dirAccess := CheckOpacity(utils.GetFatherDirectory(path), uid, gid, dclient)
+			if passed && dirAccess.DirAccessCheck(uid, gid, access.W) {
+				doperation := mrpc.DOperation {
+					uid,
+					gid,
+					"rmdir",
+					path,
+					nil,
+					nil}
+				var dreply mrpc.DReply
+				dCallChan := make(chan *rpc.Call, 1)
+				dclient.Go("LevelDB.Query", doperation, &dreply, dCallChan)
+				
+				foperation := mrpc.FOperation {
+					uid,
+					gid,
+					"rmdir",
+					path,
+					nil,
+				}	
+				var freply mrpc.FReply
+				fCallChan := make(chan *rpc.Call, 1)
+				fclient.Go("LevelDB.Query", foperation, &freply, fCallChan)
+
+				<-dCallChan
+				<-fCallChan
+
+				if dreply.R < 0 || freply.R < 0 {
+					log.Fatalln("error when rmdir")
+				}
+
+				result = errors.ErrorString(errors.OK)
+			} else {
+				result = errors.ErrorString(errors.ACCESS_DENIED)
 			}
 		case "ls":
 			// access validation: check opacity from root to path's
@@ -230,6 +279,7 @@ func main() {
 				}
 			} else {
 				if passed {
+					// first try file
 					operation := mrpc.FOperation {
 						uid,
 						gid,
@@ -241,8 +291,23 @@ func main() {
 					if err != nil {
 						log.Fatalln("error during rpc: ", err)
 					} else if reply.R < 0 {
-						fmt.Printf("operation failed: reply = %v info = %v", errors.ErrorString(reply.R), reply.Info)
-						result = errors.ErrorString(reply.R)
+						// try directory
+						doperation := mrpc.DOperation {
+							uid,
+							gid,
+							"stat",
+							path + "/",
+							nil,
+							nil}
+						var dreply mrpc.DReply
+						err := dclient.Call("LevelDB.Query", doperation, &dreply)
+						if err != nil {
+							log.Fatalln("error during rpc: ", err)
+						} else if dreply.R < 0 {
+							result = errors.ErrorString(dreply.R)
+						} else {
+							result = dreply.MDirAccess.GetString()
+						}
 					} else {
 						result = reply.Info
 					}
@@ -312,6 +377,8 @@ func main() {
 			} else {
 				result = errors.ErrorString(errors.ACCESS_DENIED)
 			}
+		default:
+			log.Printf("unhandled command %v\n", c_type)
 		}
 		
 		if result == "" {
