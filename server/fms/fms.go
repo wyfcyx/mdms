@@ -19,10 +19,7 @@ import (
 var (
 	UserMap map[string]uint32
 	GroupMap map[uint16][]uint16
-)
-
-const (
-	Debug bool = false
+	Debug bool
 )
 
 type Operation struct {
@@ -153,6 +150,11 @@ func main() {
 	id := utils.GetID(addr)
 	idStr := strconv.Itoa(id)
 
+	if os.Args[2] == "1" {
+		Debug = true
+	} else {
+		Debug = false
+	}
 	// check if previous db store exist & delete
 	dbPath := mdmsHome + "fmsdb" + idStr
 	if utils.Exists(dbPath) {
