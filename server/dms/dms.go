@@ -26,6 +26,10 @@ var (
 	GroupMap map[uint16][]uint16
 )
 
+const (
+	Debug bool = true
+)
+
 type LevelDB struct {
 	//m sync.Mutex
 	db *leveldb.DB
@@ -49,7 +53,9 @@ func Access(path string, t *LevelDB) (bool, string) {
 }
 
 func Pass(path string, uid uint16, gid uint16, t *LevelDB) (bool, access.DirAccess) {
-	log.Printf("pass uid,gid=%v,%v path=%v\n", uid, gid, path)
+	if Debug {
+		log.Printf("pass uid,gid=%v,%v path=%v\n", uid, gid, path)
+	}
 	// return if (uid, gid) can pass all the directories from / to <path>
 	// search path as a key in KVS
 	byteArray, err := t.db.Get([]byte(utils.DirentTransfer(path)), nil)
@@ -78,7 +84,6 @@ func Pass(path string, uid uint16, gid uint16, t *LevelDB) (bool, access.DirAcce
 }
 
 func Stat(path string, t *LevelDB) (int, access.DirAccess) {
-	fmt.Println("start Stat!")
 	byteArray, err := t.db.Get([]byte(utils.DirentTransfer(path)), nil)
 	if err != nil {
 		return errors.NO_SUCH_FILEDIR, access.DirAccess{}
@@ -100,7 +105,9 @@ func (t *LevelDB) Query(operation mrpc.DOperation, reply *mrpc.DReply) error {
 		// create directory, absolute path start with '/'
 		// as a directory, its path must end with '/' as well
 		// no access validation
-		log.Printf("(uid,gid)=%v,%v mkdir %v", operation.Uid, operation.Gid, operation.Path);
+		if Debug {
+			log.Printf("(uid,gid)=%v,%v mkdir %v", operation.Uid, operation.Gid, operation.Path);
+		}
 		if DirExisted(operation.Path, t) {
 			reply.R = errors.FILEDIR_EXISTED
 			break
@@ -132,10 +139,40 @@ func (t *LevelDB) Query(operation mrpc.DOperation, reply *mrpc.DReply) error {
 			log.Panicln("leveldb error!")
 		}
 		reply.R = errors.OK
+	case "rmdir":
+		if Debug {
+			log.Printf("(uid,gid)=%v,%v rmdir %v", operation.Uid, operation.Gid, operation.Path)
+		}
+		if !DirExisted(operation.Path, t) {
+			reply.R = errors.NO_SUCH_FILEDIR
+			break
+		}
+		// remove all direct/indirect sub-directories like "ls"
+		prefixL := operation.Path
+		prefixR := operation.Path[:len(operation.Path) - 1] + "]"
+		iter := t.db.NewIterator(
+			&util.Range {
+				Start: []byte(prefixL),
+				Limit: []byte(prefixR),
+			},
+			nil,
+		)
+		for iter.Next() {
+			if err := t.db.Delete(iter.Key(), nil); err != nil {
+				log.Fatalln("error in leveldb: ", err)
+			}
+		}
+		// remove itself
+		if err := t.db.Delete([]byte(utils.DirentTransfer(operation.Path)), nil); err != nil {
+			log.Fatalln("error in leveldb: ", err)
+		}
+		reply.R = errors.OK
 	case "ls":
 		// now directory only
 		// access father directory
-		log.Printf("(uid,gid)=%v,%v ls %v", operation.Uid, operation.Gid, operation.Path)
+		if Debug {
+			log.Printf("(uid,gid)=%v,%v ls %v", operation.Uid, operation.Gid, operation.Path)
+		}
 		if !DirExisted(operation.Path, t) {
 			reply.R = errors.NO_SUCH_FILEDIR
 			break
@@ -158,7 +195,9 @@ func (t *LevelDB) Query(operation mrpc.DOperation, reply *mrpc.DReply) error {
 		// TODO: check whether the dir is existed
 	case "stat":
 		// now directory only
-		log.Printf("(uid,gid)=%v,%v stat %v", operation.Uid, operation.Gid, operation.Path)
+		if Debug {
+			log.Printf("(uid,gid)=%v,%v stat %v", operation.Uid, operation.Gid, operation.Path)
+		}
 		reply.R, reply.MDirAccess = Stat(operation.Path, t)
 	case "pass":
 		if !DirExisted(operation.Path, t) {
@@ -173,7 +212,9 @@ func (t *LevelDB) Query(operation mrpc.DOperation, reply *mrpc.DReply) error {
 			reply.R = errors.ACCESS_DENIED
 		}
 	case "access":
-		log.Printf("(uid,gid)=%v,%v access %v", operation.Uid, operation.Gid, operation.Path)
+		if Debug {
+			log.Printf("(uid,gid)=%v,%v access %v", operation.Uid, operation.Gid, operation.Path)
+		}
 		if !DirExisted(operation.Path, t) {
 			reply.R = errors.NO_SUCH_FILEDIR
 			break
